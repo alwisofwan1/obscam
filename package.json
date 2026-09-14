@@ -1,0 +1,15 @@
+{
+  "name": "obscam",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pakai kamera HP sebagai sumber video OBS lewat WebRTC",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "cert": "bash scripts/gen-cert.sh",
+    "test": "node scripts/test-signal.mjs && node scripts/test-e2e.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

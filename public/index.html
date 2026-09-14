@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>obscam — kamera HP</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #0d0f13; color: #e6e8ec;
+    font: 15px/1.45 system-ui, -apple-system, sans-serif;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  /* Kotak preview disembunyikan sampai kamera nyala, biar tidak ada
+     blok hitam besar di layar idle. */
+  #preview { display: none; }
+  #preview.on {
+    width: 100%; aspect-ratio: 16/9; background: #000;
+    object-fit: contain; display: block;
+  }
+  #preview.mirror { transform: scaleX(-1); }
+  main { padding: 12px 14px 28px; max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 17px; margin: 0 0 2px; }
+  .sub { color: #8b93a3; font-size: 13px; margin-bottom: 14px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .row > label { flex: 0 0 96px; color: #8b93a3; font-size: 13px; }
+  select, button {
+    font: inherit; border-radius: 9px; border: 1px solid #2a2f3a;
+    background: #171b22; color: #e6e8ec; padding: 9px 10px;
+  }
+  select { flex: 1; }
+  button { cursor: pointer; }
+  button.primary {
+    width: 100%; padding: 15px; font-weight: 600; font-size: 16px;
+    background: #2f6df6; border-color: #2f6df6;
+  }
+  button.primary[data-live="1"] { background: #b9302f; border-color: #b9302f; }
+  button:disabled { opacity: .45; cursor: default; }
+  .toggles { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 14px; }
+  .toggles button { flex: 1; min-width: 88px; }
+  .toggles button[aria-pressed="true"] { background: #223559; border-color: #2f6df6; }
+  #status {
+    margin-top: 14px; padding: 10px 12px; border-radius: 9px;
+    background: #12161d; border: 1px solid #222834;
+    font-size: 13px; color: #9aa3b3; white-space: pre-wrap;
+  }
+  #status b { color: #e6e8ec; font-weight: 600; }
+  .warn { color: #f0a742; }
+</style>
+</head>
+<body>
+<video id="preview" autoplay playsinline muted></video>
+<main>
+  <h1>obscam — sender</h1>
+  <div class="sub">Room: <b id="roomName"></b> · kirim kamera HP ke OBS</div>
+
+  <div class="row">
+    <label for="cam">Kamera</label>
+    <select id="cam"></select>
+  </div>
+  <div class="row">
+    <label for="res">Resolusi</label>
+    <select id="res">
+      <option value="1280x720">720p</option>
+      <option value="1920x1080" selected>1080p</option>
+      <option value="2560x1440">1440p</option>
+      <option value="3840x2160">4K</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="fps">FPS</label>
+    <select id="fps">
+      <option value="24">24</option>
+      <option value="30" selected>30</option>
+      <option value="60">60</option>
+    </select>
+  </div>
+  <div class="row">
+    <label for="bitrate">Bitrate</label>
+    <select id="bitrate">
+      <option value="2000000">2 Mbps</option>
+      <option value="4000000" selected>4 Mbps</option>
+      <option value="8000000">8 Mbps</option>
+      <option value="12000000">12 Mbps</option>
+    </select>
+  </div>
+
+  <div class="toggles">
+    <button id="btnMic" aria-pressed="false">🎙 Mic off</button>
+    <button id="btnTorch" aria-pressed="false" disabled>🔦 Flash</button>
+    <button id="btnMirror" aria-pressed="false">🪞 Mirror</button>
+  </div>
+
+  <button id="btnGo" class="primary">Mulai kirim</button>
+  <div id="status">Tekan “Mulai kirim” lalu izinkan akses kamera.</div>
+</main>
+
+<script type="module">
+import { connectSignal, ICE_CONFIG } from './signal.js';
+
+// Ambil elemen eksplisit: id global implisit tidak bisa dipakai untuk
+// nama yang bentrok dengan properti window bawaan (window.status = string).
+const $ = (id) => document.getElementById(id);
+const statusBox = $('status');
+
+const room = new URL(location).searchParams.get('room') || 'default';
+$('roomName').textContent = room;
+
+let stream = null;
+let live = false;
+let wakeLock = null;
+const peers = new Map();        // viewerId -> { pc, videoSender, audioSender } (tersambung)
+const knownViewers = new Set(); // viewer di room, termasuk saat kita belum live
+
+const log = (html) => { statusBox.innerHTML = html; };
+
+function statusLine() {
+  const t = stream?.getVideoTracks()[0]?.getSettings?.() ?? {};
+  const size = t.width ? `${t.width}×${t.height}@${Math.round(t.frameRate ?? 0)}` : '—';
+  log(`Status: <b>${live ? 'LIVE' : 'idle'}</b>\nViewer (OBS) tersambung: <b>${peers.size}</b>\nKamera aktual: <b>${size}</b>`);
+}
+
+// --- kamera ---------------------------------------------------------------
+
+async function listCameras() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cams = devices.filter((d) => d.kind === 'videoinput');
+  $('cam').innerHTML = '';
+  cams.forEach((d, i) => {
+    const o = document.createElement('option');
+    o.value = d.deviceId;
+    // Label kosong sebelum permission diberikan — itu normal.
+    o.textContent = d.label || `Kamera ${i + 1}`;
+    $('cam').append(o);
+  });
+}
+
+async function openCamera() {
+  const [w, h] = $('res').value.split('x').map(Number);
+  const constraints = {
+    video: {
+      deviceId: $('cam').value ? { exact: $('cam').value } : undefined,
+      width: { ideal: w },
+      height: { ideal: h },
+      frameRate: { ideal: Number($('fps').value) },
+    },
+    // Mic dimatikan default: paling sering audio diambil dari mixer/PC,
+    // dan mic HP bikin echo kalau speaker PC nyala.
+    audio: $('btnMic').getAttribute('aria-pressed') === 'true'
+      ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      : false,
+  };
+
+  const next = await navigator.mediaDevices.getUserMedia(constraints);
+  stream?.getTracks().forEach((t) => t.stop());
+  stream = next;
+  $('preview').srcObject = stream;
+  $('preview').classList.add('on');
+
+  await listCameras(); // sekarang label device sudah terisi
+  if ($('cam').value === '' && stream.getVideoTracks()[0]) {
+    const id = stream.getVideoTracks()[0].getSettings().deviceId;
+    if (id) $('cam').value = id;
+  }
+
+  // torch cuma ada di sebagian HP Android
+  const caps = stream.getVideoTracks()[0].getCapabilities?.() ?? {};
+  $('btnTorch').disabled = !caps.torch;
+  $('btnTorch').setAttribute('aria-pressed', 'false');
+
+  // sambungkan track baru ke semua viewer yang sudah ada
+  for (const p of peers.values()) await attachTracks(p);
+  statusLine();
+}
+
+// --- WebRTC ---------------------------------------------------------------
+
+async function attachTracks(p) {
+  const v = stream?.getVideoTracks()[0] ?? null;
+  const a = stream?.getAudioTracks()[0] ?? null;
+
+  if (v) {
+    if (p.videoSender) await p.videoSender.replaceTrack(v);
+    else p.videoSender = p.pc.addTrack(v, stream);
+    await applyBitrate(p);
+  }
+  if (a) {
+    if (p.audioSender) await p.audioSender.replaceTrack(a);
+    else p.audioSender = p.pc.addTrack(a, stream);
+  } else if (p.audioSender) {
+    await p.audioSender.replaceTrack(null);
+  }
+}
+
+async function applyBitrate(p) {
+  if (!p.videoSender) return;
+  const params = p.videoSender.getParameters();
+  params.encodings = params.encodings?.length ? params.encodings : [{}];
+  params.encodings[0].maxBitrate = Number($('bitrate').value);
+  params.degradationPreference = 'maintain-resolution';
+  await p.videoSender.setParameters(params).catch(() => {});
+}
+
+async function addViewer(viewerId) {
+  const pc = new RTCPeerConnection(ICE_CONFIG);
+  const p = { pc, videoSender: null, audioSender: null };
+  peers.set(viewerId, p);
+
+  pc.onicecandidate = (e) => {
+    if (e.candidate) sig.signal(viewerId, { candidate: e.candidate });
+  };
+  pc.onconnectionstatechange = () => {
+    if (['failed', 'closed'].includes(pc.connectionState)) removeViewer(viewerId);
+    statusLine();
+  };
+
+  await attachTracks(p);
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  sig.signal(viewerId, { sdp: pc.localDescription });
+  statusLine();
+}
+
+// Dipakai saat mulai kirim: OBS sering sudah nangkring di room duluan.
+function connectAllViewers() {
+  for (const id of knownViewers) if (!peers.has(id)) addViewer(id);
+}
+
+function removeViewer(viewerId, notify = false) {
+  // ICE butuh puluhan detik untuk sadar peer hilang, jadi kabari eksplisit
+  // supaya OBS langsung balik ke layar tunggu.
+  if (notify) sig.signal(viewerId, { bye: true });
+  peers.get(viewerId)?.pc.close();
+  peers.delete(viewerId);
+  statusLine();
+}
+
+const sig = connectSignal({
+  room,
+  role: 'sender',
+  onWelcome: ({ peers: existing }) => {
+    // Setelah reconnect, semua id lama tidak valid lagi.
+    [...peers.keys()].forEach((id) => removeViewer(id));
+    knownViewers.clear();
+    existing.filter((p) => p.role === 'viewer').forEach((p) => knownViewers.add(p.id));
+    if (live) connectAllViewers();
+  },
+  onPeerJoin: ({ id, role }) => {
+    if (role !== 'viewer') return;
+    knownViewers.add(id);
+    if (live) addViewer(id);
+  },
+  onPeerLeave: ({ id }) => {
+    knownViewers.delete(id);
+    removeViewer(id);
+  },
+  onSignal: async (from, data) => {
+    const p = peers.get(from);
+    if (!p) return;
+    if (data.sdp) await p.pc.setRemoteDescription(data.sdp);
+    if (data.candidate) await p.pc.addIceCandidate(data.candidate).catch(() => {});
+  },
+  onStatus: () => statusLine(),
+});
+
+// --- UI -------------------------------------------------------------------
+
+$('btnGo').onclick = async () => {
+  if (live) {
+    live = false;
+    [...peers.keys()].forEach((id) => removeViewer(id, true));
+    stream?.getTracks().forEach((t) => t.stop());
+    stream = null;
+    $('preview').srcObject = null;
+    $('preview').classList.remove('on');
+    wakeLock?.release?.();
+    wakeLock = null;
+    $('btnGo').textContent = 'Mulai kirim';
+    $('btnGo').dataset.live = '0';
+    statusLine();
+    return;
+  }
+
+  try {
+    await openCamera();
+  } catch (err) {
+    log(`<span class="warn">Gagal buka kamera: ${err.name} — ${err.message}</span>\n\nKalau ini NotAllowedError di halaman https dengan sertifikat self-signed, buka ulang URL dan pilih “Lanjutkan/Advanced”.`);
+    return;
+  }
+
+  live = true;
+  connectAllViewers();
+  $('btnGo').textContent = 'Stop';
+  $('btnGo').dataset.live = '1';
+  // Layar HP mati = kamera berhenti. Wake lock menahannya.
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
+  statusLine();
+};
+
+$('cam').onchange = $('res').onchange = $('fps').onchange = () => { if (live) openCamera(); };
+$('bitrate').onchange = () => peers.forEach(applyBitrate);
+
+$('btnMic').onclick = async () => {
+  const on = $('btnMic').getAttribute('aria-pressed') === 'true';
+  $('btnMic').setAttribute('aria-pressed', String(!on));
+  $('btnMic').textContent = !on ? '🎙 Mic on' : '🎙 Mic off';
+  if (live) await openCamera();
+};
+
+$('btnTorch').onclick = async () => {
+  const track = stream?.getVideoTracks()[0];
+  if (!track) return;
+  const on = $('btnTorch').getAttribute('aria-pressed') === 'true';
+  await track.applyConstraints({ advanced: [{ torch: !on }] }).catch(() => {});
+  $('btnTorch').setAttribute('aria-pressed', String(!on));
+};
+
+// Mirror hanya mempengaruhi preview lokal, bukan yang dikirim ke OBS
+// (flip di OBS saja kalau perlu — gratis di GPU sana).
+$('btnMirror').onclick = () => {
+  const on = $('btnMirror').getAttribute('aria-pressed') === 'true';
+  $('btnMirror').setAttribute('aria-pressed', String(!on));
+  $('preview').classList.toggle('mirror', !on);
+};
+
+// Re-acquire wake lock setelah tab kembali aktif
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState === 'visible' && live && !wakeLock) {
+    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
+  }
+});
+
+listCameras().catch(() => {});
+</script>
+</body>
+</html>
