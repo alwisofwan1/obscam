@@ -40,6 +40,13 @@ export function createTransport({ signal, getConfig, onChange, onMessage }) {
   const peers = new Map();
   let stats = null;
 
+  // Rem encoder. scaleResolutionDownBy dan maxFramerate bekerja lewat
+  // setParameters — encoder menerima frame yang lebih kecil/jarang tanpa
+  // getUserMedia disentuh. Itu pentingnya: menurunkan resolusi lewat
+  // constraint berarti me-restart kamera, dan me-restart kamera di tengah
+  // take berarti framing bergeser dan semua setelan pro hilang.
+  let brake = { scale: 1, fps: 0 };
+
   function preferCodec(transceiver, mode) {
     if (!transceiver?.setCodecPreferences || !RTCRtpSender.getCapabilities) return;
     const codecs = RTCRtpSender.getCapabilities('video')?.codecs ?? [];
@@ -60,9 +67,20 @@ export function createTransport({ signal, getConfig, onChange, onMessage }) {
     const { bitrate, degradation } = getConfig();
     const params = p.videoSender.getParameters();
     params.encodings = params.encodings?.length ? params.encodings : [{}];
-    params.encodings[0].maxBitrate = Number(bitrate);
+    const e = params.encodings[0];
+    e.maxBitrate = Number(bitrate);
+    e.scaleResolutionDownBy = brake.scale;
+    if (brake.fps > 0) e.maxFramerate = brake.fps;
+    else delete e.maxFramerate;
     params.degradationPreference = degradation;
     await p.videoSender.setParameters(params).catch(() => {});
+  }
+
+  /** @param {{scale:number, fps:number}} next */
+  async function setBrake(next) {
+    if (next.scale === brake.scale && next.fps === brake.fps) return;
+    brake = next;
+    await updateEncoding();
   }
 
   async function negotiate(p) {
@@ -241,6 +259,8 @@ export function createTransport({ signal, getConfig, onChange, onMessage }) {
     remove,
     removeAll,
     post,
+    setBrake,
+    get brake() { return brake; },
     updateTracks,
     updateEncoding,
     recodec,

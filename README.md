@@ -199,7 +199,8 @@ belum terpasang, E2E di-skip (bukan gagal).
 | Sudah `manual` tapi slider tetap redup | Panel akan menampilkan alasannya: lensa itu menolak mode manual. Sebagian HP hanya mendukungnya di lensa utama. |
 | Panel bilang "tidak melaporkan ... kembali ke browser" | Wajar. HP itu menerapkan modenya tapi tidak meng-echo lewat `getSettings()`, jadi tidak bisa diverifikasi. Kontrolnya tetap terbuka dan dikirim. |
 | Tombol hilang saat live | Chrome menyembunyikan diri setelah 4 detik. Ketuk layar. |
-| Chip peringatan "encoder software" | HP tidak memakai encoder hardware untuk codec itu — coba ganti codec ke H.264 di panel. |
+| Chip peringatan "encoder software" | HP tidak memakai encoder hardware untuk codec itu — ganti codec ke H.264 di tab Kirim. |
+| HP panas / chip `CPU` terus menyala | Lihat bagian **Beban CPU & panas**. Paling sering: encoder software, atau 1080p60 di HP kelas menengah. |
 | Tally tidak pernah menyala | Browser Source-nya bukan halaman `/obs` dari server ini, atau OBS-nya versi lama tanpa event `obsSourceActiveChanged`. Uji jalurnya tanpa OBS: buka `/obs?...&tally=program` di browser biasa. |
 | Chip `REC`/`LIVE OBS` tidak muncul | Control level Browser Source masih di bawah READ_OBS. Tally program/preview tetap jalan. |
 | Panel `/control` kosong | HP belum menekan "Mulai". Panel terisi sendiri begitu HP mengirim. |
@@ -275,6 +276,46 @@ Biayanya rata berapa pun yang dinyalakan: satu `getImageData` 256×144 tiap
 150 ms memberi makan semuanya sekaligus. Loop-nya berhenti sendiri saat semua
 alat dimatikan dan saat chrome menyembunyikan diri.
 
+## Beban CPU & panas
+
+HP yang panas akan throttle, dan encoder yang kehabisan CPU menjatuhkan
+gambar. Empat hal yang dilakukan supaya itu tidak terjadi:
+
+**Tidak ada yang bekerja untuk layar yang tidak dilihat.** Overlay dan meter
+audio berhenti total saat mode gelap, saat chrome menyembunyikan diri, dan saat
+tab ke background. Ini bukan sekadar disembunyikan lewat CSS — loop-nya benar
+benar dihentikan, jadi tidak ada readback GPU dan tidak ada lintasan piksel.
+
+**Mode gelap melepas preview.** `srcObject` dilepas, jadi render video
+full-screen berhenti sepenuhnya. Track-nya terus jalan — OBS tidak terganggu
+sama sekali. Ini penghematan terbesar yang tersedia di HP.
+
+**Rem otomatis.** Saat `qualityLimitationReason` melaporkan `cpu` selama 5
+detik berturut-turut, encoder direm bertahap: fps dibatasi 30, lalu skala
+1,5×, lalu 2×. Semuanya lewat `setParameters` — **kamera tidak di-restart**,
+jadi framing dan seluruh setelan pro tetap utuh. Rem dilepas lagi setelah 20
+detik lega; pemulihan sengaja jauh lebih lambat daripada penurunan supaya
+tidak berayun di ambang batas. Bisa dimatikan di tab Kirim.
+
+**Buffer dipakai ulang.** Overlay dulu mengalokasikan ~1,2 MB per detik dan
+GC-nya adalah persis jeda yang membuat encoder kehabisan jatah. Saat hanya
+histogram yang menyala, pikselnya juga disubsampel seperempat.
+
+### Kalau chip peringatan masih menyala
+
+Baca `status` di tab Kirim — di sana ada diagnosisnya, bukan cuma gejalanya:
+
+| Yang terbaca | Artinya |
+|---|---|
+| `Encoder: ... (SOFTWARE)` | Ini penyebab paling umum. HP meng-encode dengan CPU, bukan chip encoder. Ganti codec ke **H.264** di tab Kirim. |
+| `Pembatas: cpu` + encoder hardware | Resolusi/fps terlalu tinggi untuk HP ini. Turun ke 1080p30 atau 720p60. |
+| `Pembatas: bandwidth` | Bukan soal CPU — WiFi-nya. Turunkan bitrate. |
+| `Dikirim: 960×540@30` padahal minta 1080p | Rem otomatis sedang bekerja. Itu memang yang diinginkan. |
+
+Matikan juga alat monitor yang tidak sedang dipakai (tombol 📊). False color
+dan focus peaking menyentuh setiap piksel sampel; histogram saja jauh lebih
+murah.
+
 ## Latency & kualitas
 
 Dua hal yang paling terasa, keduanya tidak kelihatan di UI:
@@ -313,6 +354,7 @@ public/signal.js       klien signaling + konfigurasi ICE
 scripts/gen-cert.sh    sertifikat self-signed (SAN = semua IP LAN)
 scripts/chromium.mjs   pencari Playwright, dipakai bersama test browser
 scripts/test-sdp.mjs, test-overlay.mjs, test-signal.mjs,
-scripts/test-e2e.mjs, test-procontrol.mjs, test-control.mjs
+scripts/test-e2e.mjs, test-procontrol.mjs, test-control.mjs,
+scripts/test-power.mjs
 certs/token            token room (auto-generate, jangan di-commit)
 ```

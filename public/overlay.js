@@ -65,8 +65,16 @@ export function createOverlay({ video, canvas, scope, getConfig }) {
   const mctx = mask.getContext('2d');
 
   const hist = { r: new Uint32Array(64), g: new Uint32Array(64), b: new Uint32Array(64), y: new Uint32Array(64) };
+
+  // Dialokasikan sekali. Versi sebelumnya membuat Uint8ClampedArray 36 KB dan
+  // ImageData 147 KB SETIAP tick — ~1,2 MB sampah per detik, dan GC di HP
+  // kelas menengah adalah persis jeda yang membuat encoder kehabisan jatah.
+  const luma = new Uint8ClampedArray(SAMPLE_W * SAMPLE_H);
+  const maskData = mctx.createImageData(SAMPLE_W, SAMPLE_H);
+
   let timer = null;
   let dpr = 1;
+  let interval = 150;
 
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -100,23 +108,36 @@ export function createOverlay({ video, canvas, scope, getConfig }) {
 
     // Luma disimpan terpisah: focus peaking butuh membandingkan tetangga, dan
     // menghitung ulang luma per tetangga akan melipatgandakan kerjanya.
-    const luma = new Uint8ClampedArray(SAMPLE_W * SAMPLE_H);
-    for (let i = 0, p = 0; i < luma.length; i++, p += 4) {
-      const r = px[p], g = px[p + 1], b = px[p + 2];
-      const y = (r * 77 + g * 150 + b * 29) >> 8;
-      luma[i] = y;
-      if (wantHist) {
-        hist.y[y >> 2]++;
+    const needLuma = wantZebra || wantPeak || wantFalse;
+
+    if (needLuma) {
+      for (let i = 0, p = 0; i < luma.length; i++, p += 4) {
+        const r = px[p], g = px[p + 1], b = px[p + 2];
+        const y = (r * 77 + g * 150 + b * 29) >> 8;
+        luma[i] = y;
+        if (wantHist) {
+          hist.y[y >> 2]++;
+          hist.r[r >> 2]++;
+          hist.g[g >> 2]++;
+          hist.b[b >> 2]++;
+        }
+      }
+    } else {
+      // Histogram saja: tidak ada yang membaca per-piksel, jadi cukup ambil
+      // satu dari empat. Bentuk histogram 64 bin tidak berubah, kerjanya
+      // seperempatnya.
+      for (let p = 0; p < px.length; p += 16) {
+        const r = px[p], g = px[p + 1], b = px[p + 2];
+        hist.y[((r * 77 + g * 150 + b * 29) >> 8) >> 2]++;
         hist.r[r >> 2]++;
         hist.g[g >> 2]++;
         hist.b[b >> 2]++;
       }
+      return null;
     }
 
-    if (!wantZebra && !wantPeak && !wantFalse) return null;
-
-    const out = mctx.createImageData(SAMPLE_W, SAMPLE_H);
-    const o = out.data;
+    const o = maskData.data;
+    o.fill(0);
 
     for (let y = 0; y < SAMPLE_H; y++) {
       for (let x = 0; x < SAMPLE_W; x++) {
@@ -147,7 +168,7 @@ export function createOverlay({ video, canvas, scope, getConfig }) {
         }
       }
     }
-    return out;
+    return maskData;
   }
 
   // Skala eksposur ala false color: biru = gelap/noise, hijau = kulit yang
@@ -231,13 +252,21 @@ export function createOverlay({ video, canvas, scope, getConfig }) {
     g.fillRect(W - 1, 0, 1, H);
   }
 
-  function tick() {
+  function tick(paused = false) {
     const cfg = getConfig();
     const g = canvas.getContext('2d');
     g.clearRect(0, 0, canvas.width, canvas.height);
 
     const rect = contentRect(video, canvas.width, canvas.height, cfg.fit);
     const anyScope = cfg.hist !== 'off' || cfg.zebra !== 'off' || cfg.peak !== 'off' || cfg.falseColor;
+
+    // Dijeda: garis bantu tetap terlihat (tidak ikut disembunyikan CSS), tapi
+    // tidak ada readback GPU dan tidak ada lintasan piksel sama sekali.
+    if (paused) {
+      drawHistogram({ hist: 'off' });
+      drawGuides(g, rect, cfg.guides);
+      return;
+    }
 
     if (anyScope && video.videoWidth) {
       const maskData = analyse(cfg);
@@ -259,14 +288,38 @@ export function createOverlay({ video, canvas, scope, getConfig }) {
 
   return {
     resize() { resize(); tick(); },
-    redraw: tick,
+    redraw: () => tick(),
+
     start() {
       if (timer) return;
       resize();
       // ~6,7 Hz. Cukup cepat untuk terasa hidup, cukup lambat supaya tidak ikut
       // memanaskan HP yang sedang meng-encode 1080p60.
-      timer = setInterval(tick, 150);
+      timer = setInterval(() => tick(), interval);
     },
+
+    /**
+     * Berhenti menganalisis tapi biarkan garis bantu di layar.
+     * Dipakai saat chrome menyembunyikan diri, saat blackout, dan saat tab ke
+     * background — dulu loop-nya terus jalan di ketiganya, membaca balik frame
+     * dari GPU 6,7 kali per detik untuk sesuatu yang tidak terlihat siapa pun.
+     */
+    pause() {
+      clearInterval(timer);
+      timer = null;
+      resize();
+      tick(true);
+    },
+
+    /** Turunkan laju saat encoder sedang kehabisan CPU. */
+    setInterval(ms) {
+      if (ms === interval) return;
+      interval = ms;
+      if (timer) { clearInterval(timer); timer = setInterval(() => tick(), interval); }
+    },
+
+    get running() { return !!timer; },
+
     stop() {
       clearInterval(timer);
       timer = null;
@@ -284,13 +337,15 @@ export function createMeter({ bar, peakEl }) {
   let ctx = null;
   let analyser = null;
   let source = null;
-  let raf = null;
+  let timer = null;
   let peakHold = 0;
   let peakAt = 0;
+  let tick = null;
 
   function stop() {
-    cancelAnimationFrame(raf);
-    raf = null;
+    clearInterval(timer);
+    timer = null;
+    tick = null;
     source?.disconnect();
     source = null;
     analyser = null;
@@ -311,7 +366,7 @@ export function createMeter({ bar, peakEl }) {
     source.connect(analyser);
     const buf = new Float32Array(analyser.fftSize);
 
-    const loop = () => {
+    tick = () => {
       analyser.getFloatTimeDomainData(buf);
       let peak = 0;
       for (const v of buf) { const a = Math.abs(v); if (a > peak) peak = a; }
@@ -326,11 +381,25 @@ export function createMeter({ bar, peakEl }) {
       if (db > peakHold || now - peakAt > 1500) { peakHold = db; peakAt = now; }
       if (peakEl) peakEl.textContent = peakHold > -100 ? `${peakHold.toFixed(0)}dB` : '';
       bar.classList.toggle('clip', db > -1);
-
-      raf = requestAnimationFrame(loop);
     };
-    loop();
+
+    resume();
   }
 
-  return { attach, stop };
+  // 20 Hz, bukan requestAnimationFrame. Pada 60 Hz meter ini membaca 1024
+  // sampel dan menulis style enam puluh kali per detik untuk batang setinggi
+  // 6 piksel — dan terus jalan walau layar sedang gelap.
+  function resume() {
+    if (timer || !tick) return;
+    timer = setInterval(tick, 50);
+    tick();
+  }
+
+  function pause() {
+    clearInterval(timer);
+    timer = null;
+    bar.style.width = '0%';
+  }
+
+  return { attach, stop, resume, pause, get active() { return !!timer; } };
 }

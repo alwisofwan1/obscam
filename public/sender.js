@@ -183,11 +183,18 @@ function refreshStatus() {
   const s = cam.settings;
   const size = s.width ? `${s.width}×${s.height}@${Math.round(s.frameRate ?? 0)}` : '—';
   // E2E dan operator sama-sama membaca baris ini; jaga formatnya.
+  const st = tx.stats;
   $('status').textContent =
     `Status: ${live ? 'LIVE' : 'idle'}\n` +
     `Viewer (OBS) tersambung: ${tx.size}\n` +
     `Kamera aktual: ${size}\n` +
-    `Room: ${room}`;
+    `Room: ${room}` +
+    (st
+      ? `\n\nDikirim: ${st.width}×${st.height}@${st.fps} · ${(st.kbps / 1000).toFixed(2)} Mbps\n` +
+        `Encoder: ${st.encoder || '—'} (${st.hardware ? 'hardware' : 'SOFTWARE'})\n` +
+        `Pembatas: ${st.limit}\n` +
+        `Rem otomatis: ${BRAKE_STEPS[brakeStep].label || 'tidak aktif'}`
+      : '');
 
   $('chipState').textContent = live ? 'LIVE' : 'IDLE';
   body.classList.toggle('live', live);
@@ -204,6 +211,44 @@ function toggleChip(id, text) {
 
 const LIMIT_LABEL = { cpu: 'CPU HP tidak kuat', bandwidth: 'WiFi tidak kuat', other: 'encoder menahan' };
 
+// Tangga rem. Turun satu anak tangga tiap 5 detik CPU mentok, naik lagi
+// setelah 20 detik lega — pemulihan sengaja jauh lebih lambat daripada
+// penurunan supaya tidak berayun-ayun di ambang batas.
+const BRAKE_STEPS = [
+  { scale: 1, fps: 0, label: '' },
+  { scale: 1, fps: 30, label: 'fps dibatasi 30' },
+  { scale: 1.5, fps: 30, label: 'skala 1,5× · fps 30' },
+  { scale: 2, fps: 30, label: 'skala 2× · fps 30' },
+];
+
+let brakeStep = 0;
+let cpuStreak = 0;
+let calmStreak = 0;
+
+function autoBrake(st) {
+  if (!prefs.get('autoBrake')) {
+    if (brakeStep) { brakeStep = 0; tx.setBrake(BRAKE_STEPS[0]); }
+    return;
+  }
+
+  const strained = st.limit === 'cpu';
+  cpuStreak = strained ? cpuStreak + 1 : 0;
+  calmStreak = strained ? 0 : calmStreak + 1;
+
+  let next = brakeStep;
+  if (cpuStreak >= 5 && brakeStep < BRAKE_STEPS.length - 1) next = brakeStep + 1;
+  else if (calmStreak >= 20 && brakeStep > 0) next = brakeStep - 1;
+  if (next === brakeStep) return;
+
+  brakeStep = next;
+  cpuStreak = 0;
+  calmStreak = 0;
+  tx.setBrake(BRAKE_STEPS[brakeStep]);
+  // Overlay ikut mengalah saat encoder sedang sesak.
+  overlay.setInterval(brakeStep ? 400 : 150);
+  refreshStatus();
+}
+
 async function pollStats() {
   const st = await tx.sampleStats();
   if (!st) { toggleChip('chipNet', ''); toggleChip('chipWarn', ''); return; }
@@ -211,14 +256,22 @@ async function pollStats() {
   toggleChip('chipNet', `${(st.kbps / 1000).toFixed(1)}M · ${st.fps}fps · ${st.rtt}ms`);
   tx.post({ type: 'stats', ...st });
 
+  autoBrake(st);
+
   // Satu peringatan pada satu waktu, yang paling penting dulu. Operator tidak
   // punya waktu membaca tiga chip saat sedang merekam.
+  //
+  // "CPU" saja tidak bisa ditindak. Kalau encoder-nya ternyata software,
+  // ITU sebabnya, dan gantinya jelas: pindah ke H.264. Digabung supaya
+  // penyebabnya ikut terbaca, bukan cuma gejalanya.
   let warn = '';
-  if (st.limit !== 'none') warn = LIMIT_LABEL[st.limit] ?? st.limit;
-  else if (st.loss > 3) warn = `loss ${st.loss.toFixed(1)}%`;
+  if (st.limit === 'cpu' && st.encoder && !st.hardware) warn = 'CPU — encoder software, ganti ke H.264';
+  else if (st.limit !== 'none') warn = LIMIT_LABEL[st.limit] ?? st.limit;
   else if (st.encoder && !st.hardware) warn = 'encoder software';
+  else if (st.loss > 3) warn = `loss ${st.loss.toFixed(1)}%`;
   else if (isPortrait() && live) warn = 'putar ke landscape';
   toggleChip('chipWarn', warn);
+  toggleChip('chipBrake', BRAKE_STEPS[brakeStep].label);
 }
 
 setInterval(() => { if (live) pollStats(); }, 1000);
@@ -393,11 +446,37 @@ function syncMonitor() {
   body.classList.toggle('has-scope', c.hist !== 'off');
   setPressed('btnScope', scopesOn());
   setPressed('btnGuides', c.guides !== 'off');
-  // Loop hanya jalan kalau ada yang perlu digambar — jangan sampai overlay
-  // ikut memanaskan HP yang sedang meng-encode 1080p60 tanpa alasan.
-  if (cam.videoTrack && (scopesOn() || c.guides !== 'off')) overlay.start();
-  else overlay.stop();
-  overlay.redraw();
+  syncPower();
+}
+
+/**
+ * Menentukan apa yang boleh memakai CPU sekarang.
+ *
+ * Sebelumnya overlay dan meter terus berjalan walau tidak ada yang melihatnya:
+ * saat chrome menyembunyikan diri, saat mode gelap, dan saat tab di
+ * background. CSS hanya menyembunyikannya — loop-nya tetap membaca balik frame
+ * dari GPU dan menganalisis 36 ribu piksel, 6,7 kali per detik, untuk layar
+ * yang sedang hitam.
+ */
+function syncPower() {
+  const c = monitorConfig();
+  const wanted = !!cam.videoTrack && (scopesOn() || c.guides !== 'off');
+  const hidden = document.hidden
+    || body.classList.contains('blackout')
+    || (body.classList.contains('idle') && scopesOn());
+
+  if (!wanted) overlay.stop();
+  else if (hidden) overlay.pause();
+  else overlay.start();
+
+  // Meter audio ikut berhenti — tidak ada gunanya menghitung peak untuk
+  // batang yang sedang tidak terlihat.
+  const meterVisible = !!cam.audioTrack
+    && !document.hidden
+    && !body.classList.contains('blackout')
+    && !body.classList.contains('idle');
+  if (meterVisible) meter.resume();
+  else meter.pause();
 }
 
 window.addEventListener('resize', () => overlay.resize());
@@ -408,12 +487,14 @@ window.addEventListener('orientationchange', () => setTimeout(() => overlay.resi
 let idleTimer = null;
 
 function poke() {
+  const was = body.classList.contains('idle');
   body.classList.remove('idle');
+  if (was) syncPower();
   clearTimeout(idleTimer);
   // Hanya sembunyikan saat sedang live dan panel tertutup — kalau tidak,
   // halaman idle akan terlihat seperti rusak.
   if (!live || body.classList.contains('drawer') || body.classList.contains('locked')) return;
-  idleTimer = setTimeout(() => body.classList.add('idle'), 4000);
+  idleTimer = setTimeout(() => { body.classList.add('idle'); syncPower(); }, 4000);
 }
 
 for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, poke, { capture: true });
@@ -622,14 +703,29 @@ $('btnScope').onclick = () => {
   syncMonitor();
 };
 
-$('btnBlackout').onclick = () => body.classList.add('blackout');
+function setBlackout(on) {
+  body.classList.toggle('blackout', on);
+  // Melepas srcObject menghentikan render preview full-screen sepenuhnya.
+  // Track-nya sendiri terus jalan, jadi OBS tidak terganggu sama sekali —
+  // yang berhenti hanya pekerjaan menggambarnya ke layar yang memang sengaja
+  // digelapkan. Ini penghematan terbesar dari mode ini.
+  $('preview').srcObject = on ? null : cam.stream;
+  // Keluar dari mode gelap harus mendarat di layar yang ada tombolnya. Tanpa
+  // ini, chrome yang sempat menyembunyikan diri selama blackout tetap
+  // tersembunyi — dan overlay ikut tetap terjeda.
+  if (on) clearTimeout(idleTimer);
+  else poke();
+  syncPower();
+}
+
+$('btnBlackout').onclick = () => setBlackout(true);
 // Sengaja ketuk dua kali: satu ketukan tidak boleh membatalkan mode gelap
 // kalau HP tergeser di saku atau tersenggol.
-$('blackout').addEventListener('dblclick', () => body.classList.remove('blackout'));
+$('blackout').addEventListener('dblclick', () => setBlackout(false));
 let blackTap = 0;
 $('blackout').addEventListener('pointerup', () => {
   const now = Date.now();
-  if (now - blackTap < 400) body.classList.remove('blackout');
+  if (now - blackTap < 400) setBlackout(false);
   blackTap = now;
 });
 
@@ -650,6 +746,14 @@ $('btnUiLock').onclick = () => {
   if (isPressed('btnUiLock')) return;   // buka kunci lewat tekan-tahan saja
   body.classList.add('locked');
   setPressed('btnUiLock', true);
+};
+
+$('btnAutoBrake').onclick = () => {
+  const on = !isPressed('btnAutoBrake');
+  setPressed('btnAutoBrake', on);
+  prefs.set('autoBrake', on);
+  if (!on) { brakeStep = 0; tx.setBrake(BRAKE_STEPS[0]); overlay.setInterval(150); }
+  refreshStatus();
 };
 
 $('btnFit').onclick = () => {
@@ -734,6 +838,9 @@ function syncMeter() {
   $('meter').hidden = !track;
   if (track) meter.attach(track);
   else meter.stop();
+  // attach() langsung menjalankan loop-nya; syncPower yang memutuskan apakah
+  // loop itu boleh hidup sekarang.
+  syncPower();
 }
 
 // --- baterai --------------------------------------------------------------
@@ -769,6 +876,7 @@ function restorePrefs() {
   setPressed('btnMirror', p.mirror);
   $('preview').classList.toggle('mirror', !!p.mirror);
   setPressed('btnMic', !!p.mic);
+  setPressed('btnAutoBrake', p.autoBrake !== false);
   restoreMonitorSelects();
 }
 
@@ -780,6 +888,7 @@ refreshCameraList().catch(() => {});
 
 // Wake lock dilepas otomatis saat tab ke background; ambil lagi saat kembali.
 document.addEventListener('visibilitychange', async () => {
+  syncPower();
   if (document.visibilityState === 'visible' && live && !wakeLock) {
     try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
   }

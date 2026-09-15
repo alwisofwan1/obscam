@@ -26,6 +26,7 @@ const DEFAULTS = {
   zebra: 'off',
   peak: 'off',
   falseColor: false,
+  autoBrake: true,
   camId: '',
 };
 

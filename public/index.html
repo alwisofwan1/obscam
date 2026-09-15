@@ -32,6 +32,7 @@
   <span class="chip" id="chipNet" hidden></span>
   <span class="chip" id="chipViewers" hidden></span>
   <span id="spacer"></span>
+  <span class="chip" id="chipBrake" hidden></span>
   <span class="chip warn" id="chipWarn" hidden></span>
   <span class="chip" id="chipBat" hidden></span>
 </header>
@@ -121,6 +122,14 @@
         <option value="balanced">Seimbang</option>
       </select>
     </div>
+
+    <div class="sect">Beban</div>
+    <div class="btnrow">
+      <button type="button" id="btnAutoBrake" class="wide" aria-pressed="false">Auto turunkan saat CPU penuh</button>
+    </div>
+    <div class="hint">Membatasi fps lalu menurunkan skala encoder lewat
+      setParameters — kamera tidak di-restart, jadi framing dan setelan pro
+      tetap utuh. Naik lagi sendiri setelah 20 detik lega.</div>
 
     <div class="sect">Preview</div>
     <div class="btnrow">
