@@ -7,9 +7,12 @@
   "scripts": {
     "start": "node server.js",
     "cert": "bash scripts/gen-cert.sh",
-    "test": "node scripts/test-signal.mjs && node scripts/test-e2e.mjs"
+    "test": "node scripts/test-sdp.mjs && node scripts/test-overlay.mjs && node scripts/test-signal.mjs && node scripts/test-e2e.mjs && node scripts/test-procontrol.mjs && node scripts/test-control.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
   }
 }

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#0a0c10">
+<title>obscam — kontrol</title>
+<link rel="stylesheet" href="./ui.css">
+</head>
+<body class="ctl">
+
+<div id="stage">
+  <video id="preview" autoplay playsinline muted></video>
+  <div id="splash">
+    <b>Menunggu kamera HP…</b>
+    <span>Room <b id="roomName"></b></span>
+    <small>Buka halaman sender di HP lalu tekan “Mulai”.</small>
+  </div>
+</div>
+
+<header id="topbar">
+  <span class="chip" id="chipState">MENUNGGU</span>
+  <span class="chip" id="chipFmt" hidden></span>
+  <span class="chip" id="chipNet" hidden></span>
+  <span id="spacer"></span>
+  <span class="chip warn" id="chipWarn" hidden></span>
+</header>
+
+<aside id="drawer" aria-label="Kontrol kamera">
+  <div id="tabs" role="tablist">
+    <button type="button" role="tab" id="tabPro" aria-selected="true" aria-controls="panePro">Kamera</button>
+    <button type="button" role="tab" id="tabQuick" aria-selected="false" aria-controls="paneQuick">Cepat</button>
+  </div>
+
+  <section class="pane on" id="panePro" role="tabpanel" aria-labelledby="tabPro">
+    <div id="pro"></div>
+  </section>
+
+  <section class="pane" id="paneQuick" role="tabpanel" aria-labelledby="tabQuick">
+    <div class="sect">Zoom</div>
+    <div class="row">
+      <label for="zoomRange">Zoom</label>
+      <input id="zoomRange" type="range" min="1" max="1" step="0.1" value="1">
+      <span class="val" id="zoomVal">—</span>
+    </div>
+    <div class="btnrow" id="zoomPresets"></div>
+
+    <div class="sect">Cepat</div>
+    <div class="btnrow">
+      <button type="button" id="btnLock" aria-pressed="false">🔒 Kunci AE/AF/WB</button>
+      <button type="button" id="btnTorch" aria-pressed="false" disabled>🔦 Flash</button>
+    </div>
+    <div class="btnrow">
+      <button type="button" id="btnReset" class="wide">↺ Kembalikan semua ke auto</button>
+    </div>
+
+    <div class="sect">Koneksi</div>
+    <div id="status">Menunggu HP…</div>
+    <div class="hint">Halaman ini hanya mengendalikan kamera HP. Mulai/stop
+      pengiriman tetap dilakukan dari HP-nya.</div>
+  </section>
+</aside>
+
+<script type="module" src="./control.js"></script>
+</body>
+</html>

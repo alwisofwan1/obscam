@@ -3,13 +3,21 @@
 <head>
 <meta charset="utf-8">
 <title>obscam — OBS source</title>
+<meta name="referrer" content="no-referrer">
 <style>
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
   video {
     width: 100vw; height: 100vh;
-    object-fit: contain;          /* ganti ke cover kalau mau crop penuh */
+    object-fit: contain;          /* ganti lewat ?fit=cover kalau mau crop penuh */
     background: transparent;
     display: block;
+  }
+  /* ?rotate=90|270 menukar sisi panjang/pendek — kotaknya harus ikut ditukar
+     dan dipusatkan, kalau tidak gambarnya terpotong. */
+  video.rot {
+    position: fixed;
+    width: 100vh; height: 100vw;
+    top: calc(50% - 50vw); left: calc(50% - 50vh);
   }
   /* Overlay hanya tampil saat belum ada video. Di OBS, sembunyikan dengan
      menambahkan &nohud=1 pada URL. */
@@ -31,72 +39,6 @@
   <span>Buka halaman sender di HP lalu tekan “Mulai kirim”.</span>
 </div>
 
-<script type="module">
-import { connectSignal, ICE_CONFIG } from './signal.js';
-
-const $ = (id) => document.getElementById(id);
-const v = $('v');
-const hud = $('hud');
-
-const params = new URL(location).searchParams;
-const room = params.get('room') || 'default';
-$('r').textContent = room;
-if (params.get('nohud') === '1') hud.classList.add('hide');
-if (params.get('fit')) v.style.objectFit = params.get('fit'); // contain|cover|fill
-
-let pc = null;
-
-function reset() {
-  pc?.close();
-  pc = null;
-  v.srcObject = null;
-  if (params.get('nohud') !== '1') hud.classList.remove('hide');
-}
-
-function newPeer(senderId, sig) {
-  pc?.close();
-  pc = new RTCPeerConnection(ICE_CONFIG);
-
-  pc.ontrack = (e) => {
-    v.srcObject = e.streams[0];
-    e.track.onmute = () => reset();
-    // OBS Browser Source mengizinkan autoplay + audio; di browser biasa
-    // play() bisa ditolak sampai ada interaksi user.
-    v.play().catch(() => { v.muted = true; v.play().catch(() => {}); });
-    hud.classList.add('hide');
-  };
-  pc.onicecandidate = (e) => {
-    if (e.candidate) sig.signal(senderId, { candidate: e.candidate });
-  };
-  pc.onconnectionstatechange = () => {
-    if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) reset();
-  };
-  return pc;
-}
-
-let senderId = null;
-
-const sig = connectSignal({
-  room,
-  role: 'viewer',
-  // Viewer pasif: sender yang bikin offer begitu tahu ada viewer.
-  onWelcome: () => reset(),
-  onPeerLeave: ({ id }) => { if (id === senderId) reset(); },
-  onSignal: async (from, data) => {
-    if (data.sdp?.type === 'offer') {
-      senderId = from;
-      const p = newPeer(from, sig);
-      await p.setRemoteDescription(data.sdp);
-      const answer = await p.createAnswer();
-      await p.setLocalDescription(answer);
-      sig.signal(from, { sdp: p.localDescription });
-    } else if (data.bye) {
-      if (from === senderId) reset();
-    } else if (data.candidate && pc) {
-      await pc.addIceCandidate(data.candidate).catch(() => {});
-    }
-  },
-});
-</script>
+<script type="module" src="./receiver.js"></script>
 </body>
 </html>

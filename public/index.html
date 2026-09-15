@@ -2,336 +2,196 @@
 <html lang="id">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#0a0c10">
 <title>obscam — kamera HP</title>
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: #0d0f13; color: #e6e8ec;
-    font: 15px/1.45 system-ui, -apple-system, sans-serif;
-    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
-  }
-  /* Kotak preview disembunyikan sampai kamera nyala, biar tidak ada
-     blok hitam besar di layar idle. */
-  #preview { display: none; }
-  #preview.on {
-    width: 100%; aspect-ratio: 16/9; background: #000;
-    object-fit: contain; display: block;
-  }
-  #preview.mirror { transform: scaleX(-1); }
-  main { padding: 12px 14px 28px; max-width: 560px; margin: 0 auto; }
-  h1 { font-size: 17px; margin: 0 0 2px; }
-  .sub { color: #8b93a3; font-size: 13px; margin-bottom: 14px; }
-  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
-  .row > label { flex: 0 0 96px; color: #8b93a3; font-size: 13px; }
-  select, button {
-    font: inherit; border-radius: 9px; border: 1px solid #2a2f3a;
-    background: #171b22; color: #e6e8ec; padding: 9px 10px;
-  }
-  select { flex: 1; }
-  button { cursor: pointer; }
-  button.primary {
-    width: 100%; padding: 15px; font-weight: 600; font-size: 16px;
-    background: #2f6df6; border-color: #2f6df6;
-  }
-  button.primary[data-live="1"] { background: #b9302f; border-color: #b9302f; }
-  button:disabled { opacity: .45; cursor: default; }
-  .toggles { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 14px; }
-  .toggles button { flex: 1; min-width: 88px; }
-  .toggles button[aria-pressed="true"] { background: #223559; border-color: #2f6df6; }
-  #status {
-    margin-top: 14px; padding: 10px 12px; border-radius: 9px;
-    background: #12161d; border: 1px solid #222834;
-    font-size: 13px; color: #9aa3b3; white-space: pre-wrap;
-  }
-  #status b { color: #e6e8ec; font-weight: 600; }
-  .warn { color: #f0a742; }
-</style>
+<link rel="stylesheet" href="./ui.css">
 </head>
 <body>
-<video id="preview" autoplay playsinline muted></video>
-<main>
-  <h1>obscam — sender</h1>
-  <div class="sub">Room: <b id="roomName"></b> · kirim kamera HP ke OBS</div>
 
-  <div class="row">
-    <label for="cam">Kamera</label>
-    <select id="cam"></select>
+<div id="stage">
+  <video id="preview" autoplay playsinline muted></video>
+  <canvas id="guides"></canvas>
+  <canvas id="scope" aria-hidden="true"></canvas>
+  <div id="meter" hidden><i id="meterBar"></i><b id="meterPeak"></b></div>
+  <div id="focusRing"></div>
+  <div id="tally"></div>
+  <div id="splash">
+    <b>obscam — sender</b>
+    <span>Room <b id="roomName"></b></span>
+    <small>Tekan “Mulai” lalu izinkan akses kamera.</small>
   </div>
-  <div class="row">
-    <label for="res">Resolusi</label>
-    <select id="res">
-      <option value="1280x720">720p</option>
-      <option value="1920x1080" selected>1080p</option>
-      <option value="2560x1440">1440p</option>
-      <option value="3840x2160">4K</option>
-    </select>
+</div>
+
+<header id="topbar">
+  <span class="chip" id="chipState">IDLE</span>
+  <span class="chip" id="chipTally" hidden></span>
+  <span class="chip" id="chipObs" hidden></span>
+  <span class="chip" id="chipFmt" hidden></span>
+  <span class="chip" id="chipNet" hidden></span>
+  <span class="chip" id="chipViewers" hidden></span>
+  <span id="spacer"></span>
+  <span class="chip warn" id="chipWarn" hidden></span>
+  <span class="chip" id="chipBat" hidden></span>
+</header>
+
+<div id="zoomRail">
+  <button class="zp" id="zpMax" type="button">MAX</button>
+  <input id="zoomRange" type="range" min="1" max="1" step="0.1" value="1" aria-label="Zoom">
+  <button class="zp" id="zp2" type="button">2×</button>
+  <button class="zp" id="zp1" type="button" aria-pressed="true">1×</button>
+</div>
+
+<footer id="dock">
+  <div class="cluster">
+    <button class="icon" id="btnPanel" type="button" aria-pressed="false" title="Panel">☰</button>
+    <button class="icon" id="btnMic" type="button" aria-pressed="false" title="Mic">🎙</button>
+    <button class="icon" id="btnTorch" type="button" aria-pressed="false" title="Flash" disabled>🔦</button>
+    <button class="icon" id="btnAeLock" type="button" aria-pressed="false" title="Kunci eksposur/fokus/WB">🔒</button>
+    <button class="icon" id="btnGuides" type="button" aria-pressed="false" title="Garis bantu">⊞</button>
+    <button class="icon" id="btnScope" type="button" aria-pressed="false" title="Alat monitor">📊</button>
   </div>
-  <div class="row">
-    <label for="fps">FPS</label>
-    <select id="fps">
-      <option value="24">24</option>
-      <option value="30" selected>30</option>
-      <option value="60">60</option>
-    </select>
+  <div class="cluster">
+    <button class="icon" id="btnBlackout" type="button" title="Layar gelap (tetap kirim)">🌑</button>
+    <button class="icon danger" id="btnUiLock" type="button" aria-pressed="false" title="Kunci UI — tekan-tahan untuk buka">🔐</button>
+    <button id="btnGo" type="button" data-live="0">Mulai</button>
   </div>
-  <div class="row">
-    <label for="bitrate">Bitrate</label>
-    <select id="bitrate">
-      <option value="2000000">2 Mbps</option>
-      <option value="4000000" selected>4 Mbps</option>
-      <option value="8000000">8 Mbps</option>
-      <option value="12000000">12 Mbps</option>
-    </select>
-  </div>
+</footer>
 
-  <div class="toggles">
-    <button id="btnMic" aria-pressed="false">🎙 Mic off</button>
-    <button id="btnTorch" aria-pressed="false" disabled>🔦 Flash</button>
-    <button id="btnMirror" aria-pressed="false">🪞 Mirror</button>
+<div id="scrim"></div>
+
+<aside id="drawer" aria-label="Pengaturan">
+  <div id="tabs" role="tablist">
+    <button type="button" role="tab" id="tabStream" aria-selected="true" aria-controls="paneStream">Kirim</button>
+    <button type="button" role="tab" id="tabPro" aria-selected="false" aria-controls="panePro">Kamera</button>
+    <button type="button" role="tab" id="tabMon" aria-selected="false" aria-controls="paneMon">Monitor</button>
+    <button type="button" role="tab" id="tabLook" aria-selected="false" aria-controls="paneLook">Look</button>
   </div>
 
-  <button id="btnGo" class="primary">Mulai kirim</button>
-  <div id="status">Tekan “Mulai kirim” lalu izinkan akses kamera.</div>
-</main>
+  <section class="pane on" id="paneStream" role="tabpanel" aria-labelledby="tabStream">
+    <div class="sect">Sumber</div>
+    <div class="row">
+      <label for="cam">Kamera</label>
+      <select id="cam"></select>
+    </div>
+    <div class="row">
+      <label for="res">Resolusi</label>
+      <select id="res">
+        <option value="1280x720">720p</option>
+        <option value="1920x1080">1080p</option>
+        <option value="2560x1440">1440p</option>
+        <option value="3840x2160">4K</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="fps">FPS</label>
+      <select id="fps">
+        <option value="24">24 — film</option>
+        <option value="25">25 — PAL</option>
+        <option value="30">30</option>
+        <option value="50">50 — PAL</option>
+        <option value="60">60</option>
+      </select>
+    </div>
 
-<script type="module">
-import { connectSignal, ICE_CONFIG } from './signal.js';
+    <div class="sect">Encoder</div>
+    <div class="row">
+      <label for="bitrate">Bitrate</label>
+      <select id="bitrate">
+        <option value="2000000">2 Mbps — WiFi lemah</option>
+        <option value="4000000">4 Mbps</option>
+        <option value="6000000">6 Mbps</option>
+        <option value="8000000">8 Mbps</option>
+        <option value="12000000">12 Mbps</option>
+        <option value="16000000">16 Mbps</option>
+        <option value="24000000">24 Mbps</option>
+        <option value="40000000">40 Mbps — LAN 5 GHz</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="codec">Codec</label>
+      <select id="codec"></select>
+    </div>
+    <div class="row">
+      <label for="degradation">Saat sesak</label>
+      <select id="degradation">
+        <option value="maintain-resolution">Jaga resolusi</option>
+        <option value="maintain-framerate">Jaga framerate</option>
+        <option value="balanced">Seimbang</option>
+      </select>
+    </div>
 
-// Ambil elemen eksplisit: id global implisit tidak bisa dipakai untuk
-// nama yang bentrok dengan properti window bawaan (window.status = string).
-const $ = (id) => document.getElementById(id);
-const statusBox = $('status');
+    <div class="sect">Preview</div>
+    <div class="btnrow">
+      <button type="button" id="btnFit" aria-pressed="false">Isi layar</button>
+      <button type="button" id="btnMirror" aria-pressed="false">Mirror</button>
+    </div>
 
-const room = new URL(location).searchParams.get('room') || 'default';
-$('roomName').textContent = room;
+    <div id="status">Tekan “Mulai” lalu izinkan akses kamera.</div>
+  </section>
 
-let stream = null;
-let live = false;
-let wakeLock = null;
-const peers = new Map();        // viewerId -> { pc, videoSender, audioSender } (tersambung)
-const knownViewers = new Set(); // viewer di room, termasuk saat kita belum live
+  <section class="pane" id="panePro" role="tabpanel" aria-labelledby="tabPro">
+    <div id="pro"></div>
+  </section>
 
-const log = (html) => { statusBox.innerHTML = html; };
+  <section class="pane" id="paneMon" role="tabpanel" aria-labelledby="tabMon">
+    <div class="sect">Eksposur</div>
+    <div class="row">
+      <label for="histMode">Histogram</label>
+      <select id="histMode"></select>
+    </div>
+    <div class="row">
+      <label for="zebraMode">Zebra</label>
+      <select id="zebraMode"></select>
+    </div>
+    <div class="btnrow">
+      <button type="button" id="btnFalse" class="wide" aria-pressed="false">False color</button>
+    </div>
+    <div class="hint">Zebra 70 menandai kulit yang ter-ekspos benar; 95–100
+      menandai highlight yang sudah gosong. False color menimpa seluruh gambar
+      — biru terlalu gelap, hijau kulit, merah clipping.</div>
 
-function statusLine() {
-  const t = stream?.getVideoTracks()[0]?.getSettings?.() ?? {};
-  const size = t.width ? `${t.width}×${t.height}@${Math.round(t.frameRate ?? 0)}` : '—';
-  log(`Status: <b>${live ? 'LIVE' : 'idle'}</b>\nViewer (OBS) tersambung: <b>${peers.size}</b>\nKamera aktual: <b>${size}</b>`);
-}
+    <div class="sect">Fokus</div>
+    <div class="row">
+      <label for="peakMode">Peaking</label>
+      <select id="peakMode"></select>
+    </div>
+    <div class="hint">Tepi tajam ditandai merah. Wajib kalau fokus disetel
+      manual — layar HP terlalu kecil untuk menilai fokus dengan mata.</div>
 
-// --- kamera ---------------------------------------------------------------
+    <div class="sect">Komposisi</div>
+    <div class="row">
+      <label for="guideMode">Garis bantu</label>
+      <select id="guideMode"></select>
+    </div>
 
-async function listCameras() {
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const cams = devices.filter((d) => d.kind === 'videoinput');
-  $('cam').innerHTML = '';
-  cams.forEach((d, i) => {
-    const o = document.createElement('option');
-    o.value = d.deviceId;
-    // Label kosong sebelum permission diberikan — itu normal.
-    o.textContent = d.label || `Kamera ${i + 1}`;
-    $('cam').append(o);
-  });
-}
+    <div class="hint">Semua alat di sini hanya digambar di layar HP. Yang
+      dikirim ke OBS tetap gambar bersih.</div>
+  </section>
 
-async function openCamera() {
-  const [w, h] = $('res').value.split('x').map(Number);
-  const constraints = {
-    video: {
-      deviceId: $('cam').value ? { exact: $('cam').value } : undefined,
-      width: { ideal: w },
-      height: { ideal: h },
-      frameRate: { ideal: Number($('fps').value) },
-    },
-    // Mic dimatikan default: paling sering audio diambil dari mixer/PC,
-    // dan mic HP bikin echo kalau speaker PC nyala.
-    audio: $('btnMic').getAttribute('aria-pressed') === 'true'
-      ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-      : false,
-  };
+  <section class="pane" id="paneLook" role="tabpanel" aria-labelledby="tabLook">
+    <div class="sect">Simpan setelan kamera</div>
+    <div class="row">
+      <input type="text" id="lookName" placeholder="mis. Meja kerja" maxlength="24" autocomplete="off">
+      <button type="button" id="btnLookSave">Simpan</button>
+    </div>
+    <div class="hint">Look menyimpan seluruh kontrol di tab Kamera (eksposur, ISO,
+      WB, fokus, zoom) khusus untuk lensa yang sedang dipakai.</div>
+    <div class="sect">Tersimpan</div>
+    <div class="looks" id="lookList"></div>
+    <div class="btnrow">
+      <button type="button" id="btnResetAuto" class="wide">↺ Kembalikan semua ke auto</button>
+    </div>
+  </section>
+</aside>
 
-  const next = await navigator.mediaDevices.getUserMedia(constraints);
-  stream?.getTracks().forEach((t) => t.stop());
-  stream = next;
-  $('preview').srcObject = stream;
-  $('preview').classList.add('on');
+<div id="blackout">
+  <div class="dot"></div>
+  <div>layar gelap — tetap mengirim</div>
+  <div>ketuk dua kali untuk kembali</div>
+</div>
 
-  await listCameras(); // sekarang label device sudah terisi
-  if ($('cam').value === '' && stream.getVideoTracks()[0]) {
-    const id = stream.getVideoTracks()[0].getSettings().deviceId;
-    if (id) $('cam').value = id;
-  }
-
-  // torch cuma ada di sebagian HP Android
-  const caps = stream.getVideoTracks()[0].getCapabilities?.() ?? {};
-  $('btnTorch').disabled = !caps.torch;
-  $('btnTorch').setAttribute('aria-pressed', 'false');
-
-  // sambungkan track baru ke semua viewer yang sudah ada
-  for (const p of peers.values()) await attachTracks(p);
-  statusLine();
-}
-
-// --- WebRTC ---------------------------------------------------------------
-
-async function attachTracks(p) {
-  const v = stream?.getVideoTracks()[0] ?? null;
-  const a = stream?.getAudioTracks()[0] ?? null;
-
-  if (v) {
-    if (p.videoSender) await p.videoSender.replaceTrack(v);
-    else p.videoSender = p.pc.addTrack(v, stream);
-    await applyBitrate(p);
-  }
-  if (a) {
-    if (p.audioSender) await p.audioSender.replaceTrack(a);
-    else p.audioSender = p.pc.addTrack(a, stream);
-  } else if (p.audioSender) {
-    await p.audioSender.replaceTrack(null);
-  }
-}
-
-async function applyBitrate(p) {
-  if (!p.videoSender) return;
-  const params = p.videoSender.getParameters();
-  params.encodings = params.encodings?.length ? params.encodings : [{}];
-  params.encodings[0].maxBitrate = Number($('bitrate').value);
-  params.degradationPreference = 'maintain-resolution';
-  await p.videoSender.setParameters(params).catch(() => {});
-}
-
-async function addViewer(viewerId) {
-  const pc = new RTCPeerConnection(ICE_CONFIG);
-  const p = { pc, videoSender: null, audioSender: null };
-  peers.set(viewerId, p);
-
-  pc.onicecandidate = (e) => {
-    if (e.candidate) sig.signal(viewerId, { candidate: e.candidate });
-  };
-  pc.onconnectionstatechange = () => {
-    if (['failed', 'closed'].includes(pc.connectionState)) removeViewer(viewerId);
-    statusLine();
-  };
-
-  await attachTracks(p);
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  sig.signal(viewerId, { sdp: pc.localDescription });
-  statusLine();
-}
-
-// Dipakai saat mulai kirim: OBS sering sudah nangkring di room duluan.
-function connectAllViewers() {
-  for (const id of knownViewers) if (!peers.has(id)) addViewer(id);
-}
-
-function removeViewer(viewerId, notify = false) {
-  // ICE butuh puluhan detik untuk sadar peer hilang, jadi kabari eksplisit
-  // supaya OBS langsung balik ke layar tunggu.
-  if (notify) sig.signal(viewerId, { bye: true });
-  peers.get(viewerId)?.pc.close();
-  peers.delete(viewerId);
-  statusLine();
-}
-
-const sig = connectSignal({
-  room,
-  role: 'sender',
-  onWelcome: ({ peers: existing }) => {
-    // Setelah reconnect, semua id lama tidak valid lagi.
-    [...peers.keys()].forEach((id) => removeViewer(id));
-    knownViewers.clear();
-    existing.filter((p) => p.role === 'viewer').forEach((p) => knownViewers.add(p.id));
-    if (live) connectAllViewers();
-  },
-  onPeerJoin: ({ id, role }) => {
-    if (role !== 'viewer') return;
-    knownViewers.add(id);
-    if (live) addViewer(id);
-  },
-  onPeerLeave: ({ id }) => {
-    knownViewers.delete(id);
-    removeViewer(id);
-  },
-  onSignal: async (from, data) => {
-    const p = peers.get(from);
-    if (!p) return;
-    if (data.sdp) await p.pc.setRemoteDescription(data.sdp);
-    if (data.candidate) await p.pc.addIceCandidate(data.candidate).catch(() => {});
-  },
-  onStatus: () => statusLine(),
-});
-
-// --- UI -------------------------------------------------------------------
-
-$('btnGo').onclick = async () => {
-  if (live) {
-    live = false;
-    [...peers.keys()].forEach((id) => removeViewer(id, true));
-    stream?.getTracks().forEach((t) => t.stop());
-    stream = null;
-    $('preview').srcObject = null;
-    $('preview').classList.remove('on');
-    wakeLock?.release?.();
-    wakeLock = null;
-    $('btnGo').textContent = 'Mulai kirim';
-    $('btnGo').dataset.live = '0';
-    statusLine();
-    return;
-  }
-
-  try {
-    await openCamera();
-  } catch (err) {
-    log(`<span class="warn">Gagal buka kamera: ${err.name} — ${err.message}</span>\n\nKalau ini NotAllowedError di halaman https dengan sertifikat self-signed, buka ulang URL dan pilih “Lanjutkan/Advanced”.`);
-    return;
-  }
-
-  live = true;
-  connectAllViewers();
-  $('btnGo').textContent = 'Stop';
-  $('btnGo').dataset.live = '1';
-  // Layar HP mati = kamera berhenti. Wake lock menahannya.
-  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
-  statusLine();
-};
-
-$('cam').onchange = $('res').onchange = $('fps').onchange = () => { if (live) openCamera(); };
-$('bitrate').onchange = () => peers.forEach(applyBitrate);
-
-$('btnMic').onclick = async () => {
-  const on = $('btnMic').getAttribute('aria-pressed') === 'true';
-  $('btnMic').setAttribute('aria-pressed', String(!on));
-  $('btnMic').textContent = !on ? '🎙 Mic on' : '🎙 Mic off';
-  if (live) await openCamera();
-};
-
-$('btnTorch').onclick = async () => {
-  const track = stream?.getVideoTracks()[0];
-  if (!track) return;
-  const on = $('btnTorch').getAttribute('aria-pressed') === 'true';
-  await track.applyConstraints({ advanced: [{ torch: !on }] }).catch(() => {});
-  $('btnTorch').setAttribute('aria-pressed', String(!on));
-};
-
-// Mirror hanya mempengaruhi preview lokal, bukan yang dikirim ke OBS
-// (flip di OBS saja kalau perlu — gratis di GPU sana).
-$('btnMirror').onclick = () => {
-  const on = $('btnMirror').getAttribute('aria-pressed') === 'true';
-  $('btnMirror').setAttribute('aria-pressed', String(!on));
-  $('preview').classList.toggle('mirror', !on);
-};
-
-// Re-acquire wake lock setelah tab kembali aktif
-document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && live && !wakeLock) {
-    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
-  }
-});
-
-listCameras().catch(() => {});
-</script>
+<script type="module" src="./sender.js"></script>
 </body>
 </html>

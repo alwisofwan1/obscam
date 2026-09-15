@@ -1,7 +1,11 @@
 // Klien signaling tipis di atas WebSocket. Dipakai sender & receiver.
 // Otomatis pilih ws:// atau wss:// mengikuti skema halaman.
 
-export function connectSignal({ room, role, onWelcome, onPeerJoin, onPeerLeave, onSignal, onStatus }) {
+// Token dibawa di query string halaman (?k=...) dan diteruskan saat join.
+// Sengaja tidak ditaruh di URL WebSocket supaya tidak ikut ter-log di mana pun.
+export const TOKEN = new URL(location).searchParams.get('k') ?? '';
+
+export function connectSignal({ room, role, onWelcome, onPeerJoin, onPeerLeave, onSignal, onStatus, onError }) {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   let ws;
   let selfId = null;
@@ -14,11 +18,12 @@ export function connectSignal({ room, role, onWelcome, onPeerJoin, onPeerLeave, 
     ws.onopen = () => {
       retry = 0;
       onStatus?.('signaling tersambung');
-      ws.send(JSON.stringify({ type: 'join', room, role }));
+      ws.send(JSON.stringify({ type: 'join', room, role, token: TOKEN }));
     };
 
     ws.onmessage = (ev) => {
-      const msg = JSON.parse(ev.data);
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
       if (msg.type === 'welcome') {
         selfId = msg.id;
         onWelcome?.(msg);
@@ -28,6 +33,12 @@ export function connectSignal({ room, role, onWelcome, onPeerJoin, onPeerLeave, 
         onPeerLeave?.(msg);
       } else if (msg.type === 'signal') {
         onSignal?.(msg.from, msg.data);
+      } else if (msg.type === 'error') {
+        // Ditolak server (token salah, room penuh, sender sudah diambil).
+        // Reconnect tidak akan menolong, jadi berhenti.
+        closed = true;
+        onError?.(msg.reason);
+        onStatus?.(`ditolak server: ${msg.reason}`);
       }
     };
 
